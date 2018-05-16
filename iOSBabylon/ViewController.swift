@@ -2,55 +2,33 @@ import UIKit
 import WebKit
 import JavaScriptCore
 
-class ViewController: UIViewController, WKUIDelegate {
+class ViewController: UIViewController {
+    
     var webView: WKWebView?
     var webConfig:WKWebViewConfiguration {
         get {
-                var webCfg:WKWebViewConfiguration = WKWebViewConfiguration()
-                var userController:WKUserContentController = WKUserContentController()
+            let webCfg:WKWebViewConfiguration = WKWebViewConfiguration()
+            let userController:WKUserContentController = WKUserContentController()
                 webCfg.userContentController = userController
-            return webCfg;
+            return webCfg
         }
     }
     
-    // TODO: hack for serving the assets form the /tmp/assets/ path, ios9 will solve this
-    //       meanwhile its a todo to refactor this in a better way
-    func copyFileToTmpForServingAsStaticAsset(filePath: String?) -> String? {
-        let fileMgr = NSFileManager.defaultManager()
-        let tmpPath = NSTemporaryDirectory().stringByAppendingPathComponent("assets")
-        var error: NSErrorPointer = nil
-        if !fileMgr.createDirectoryAtPath(tmpPath, withIntermediateDirectories: true, attributes: nil, error: error) {
-            println("Couldn't create assets subdirectory. \(error)")
-            return nil
-        }
-        let dstPath = tmpPath.stringByAppendingPathComponent(filePath!.lastPathComponent)
-        if !fileMgr.fileExistsAtPath(dstPath) {
-            if !fileMgr.copyItemAtPath(filePath!, toPath: dstPath, error: error) {
-                println("Couldn't copy file to /tmp/assets. \(error)")
-                return nil
-            }
-        }
-        return dstPath
-    }
-
-    func jsExceptionHandler(ctx: JSContext!, val: JSValue!) {
-        NSLog("%@", val);
-    }
-
     override func viewDidLoad() {
         super.viewDidLoad()
-        webView = WKWebView (frame: self.view.frame, configuration: webConfig)
-        webView!.UIDelegate = self
+        
+        self.webView = WKWebView (frame: self.view.frame, configuration: self.webConfig)
+        self.webView!.uiDelegate = self
         // Handle exceptions
-        var context = JSContext();
-        context.exceptionHandler = jsExceptionHandler
-        view.addSubview(webView!)
+        let context = JSContext()
+        context?.exceptionHandler = self.jsExceptionHandler
+        view.addSubview(self.webView!)
         
         // auto resize and prevent some unneeded gestures
-        webView!.autoresizingMask = UIViewAutoresizing.FlexibleWidth | UIViewAutoresizing.FlexibleHeight
-        webView!.scrollView.scrollEnabled = false;
-        webView!.scrollView.panGestureRecognizer.enabled = false;
-        webView!.scrollView.bounces = false;
+        self.webView!.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        self.webView!.scrollView.isScrollEnabled = false
+        self.webView!.scrollView.panGestureRecognizer.isEnabled = false
+        self.webView!.scrollView.bounces = false
         
         // load files
         let assetFilesToLoad = [
@@ -59,98 +37,134 @@ class ViewController: UIViewController, WKUIDelegate {
             "app": "js"
         ]
         for (fileName, fileExt) in assetFilesToLoad {
-            var filePath = NSBundle.mainBundle().pathForResource(fileName, ofType: fileExt)
-            filePath = copyFileToTmpForServingAsStaticAsset(filePath)
+            if let filePath = Bundle.main.path(forResource: fileName, ofType: fileExt) {
+                _ = self.copyFileToTmpForServingAsStaticAsset(filePath: URL(fileURLWithPath: filePath))
+            }
         }
     }
 
-    func getFileContentsAsString(filePath: String) -> String {
-        var script:String = String (contentsOfFile: filePath, encoding: NSUTF8StringEncoding, error: nil)!
-        return script;
-
-    }
-
-    override func viewDidAppear(animated: Bool) {
+    override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        loadHtml()
+        self.loadHtml()
     }
 
-    override func viewDidDisappear(animated: Bool) {
+    override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
 
         // TODO: fix this hack to load the index.html file
-        var fileName:String =  String("\( NSProcessInfo.processInfo().globallyUniqueString)_index.html")
+        let fileName = String("\(ProcessInfo.processInfo.globallyUniqueString)_index.html")
+        
+        let tmpPath = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(fileName)
+        do {
+            try FileManager.default.removeItem(at: tmpPath)
+        } catch {
+            
+        }
 
-        var error:NSError?
-        var tempHtmlPath:String =  NSTemporaryDirectory().stringByAppendingPathComponent(fileName)
-        NSFileManager.defaultManager().removeItemAtPath(tempHtmlPath, error: &error)
-
-        webView = nil
+        self.webView = nil
 
     }
 
-    override func didReceiveMemoryWarning() {
-        super.didReceiveMemoryWarning()
-    }
+}
 
+extension ViewController {
+    
+    // TODO: hack for serving the assets form the /tmp/assets/ path, ios9 will solve this
+    //       meanwhile its a todo to refactor this in a better way
+    func copyFileToTmpForServingAsStaticAsset(filePath: URL) -> String? {
+        let fileMgr = FileManager.default
+        let tmpPath = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("assets")
+        
+        do {
+            try fileMgr.createDirectory(at: tmpPath, withIntermediateDirectories: true, attributes: nil)
+        } catch {
+            print("Couldn't create assets subdirectory. \(error)")
+            return nil
+        }
+        
+        let dstPath = tmpPath.appendingPathComponent(filePath.lastPathComponent)
+        if fileMgr.fileExists(atPath: dstPath.absoluteString) == false {
+            do {
+                try fileMgr.copyItem(at: filePath, to: dstPath)
+            } catch {
+                print("Couldn't copy file to /tmp/assets. \(error)")
+                return nil
+            }
+        }
+        return dstPath.absoluteString
+    }
+    
+    func jsExceptionHandler(ctx: JSContext!, val: JSValue!) {
+        print("%@", val)
+    }
+    
+    func getFileContentsAsString(filePath: String) -> String? {
+        do {
+            let script = try String(contentsOfFile: filePath, encoding: .utf8)
+            return script
+        } catch {
+            return nil
+        }
+    }
+    
+    // File Loading
+    func loadHtml() {
+        // NOTE: Due to a bug in webKit as of iOS 8.1.1 we CANNOT load a local resource when running on device. Once that is fixed, we can get rid of the temp copy
+        let mainBundle = Bundle(for: ViewController.self)
+        
+        let fileName = String("\(ProcessInfo.processInfo.globallyUniqueString)_index.html")
+        
+        let tmpPath = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(fileName)
+        
+        guard let htmlPath = mainBundle.path(forResource: "index", ofType: "html") else {
+            self.showAlert(message: "Could not load Html file")
+            return
+        }
+        
+        do {
+            try FileManager.default.copyItem(at: URL(fileURLWithPath: htmlPath), to: tmpPath)
+            let requestUrl = URLRequest(url: tmpPath)
+            self.webView?.load(requestUrl)
+        } catch {
+            
+        }
+        
+    }
+    
+    func showAlert(message:String) {
+        let alertAction = UIAlertAction(title: "Cancel", style: .cancel) { _ in
+            self.dismiss(animated: true, completion: nil)
+        }
+        
+        let alertView = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+        alertView.addAction(alertAction)
+        
+        self.present(alertView, animated: true, completion: nil)
+    }
+    
+}
+
+extension ViewController: WKUIDelegate {
+    
     func webView(webView: WKWebView, exceptionWasRaised navigation: WKNavigation!, withError error: NSError) {
-        NSLog("%s. With Error %@", __FUNCTION__,error)
-        showAlertWithMessage("Failed to load file with error \(error.localizedDescription)!")
+        print("%s. With Error %@", #function, error)
+        self.showAlert(message: "Failed to load file with error \(error.localizedDescription)!")
     }
 
     func webView(webView: WKWebView, failedToParseSource navigation: WKNavigation!, withError error: NSError) {
-        NSLog("%s. With Error %@", __FUNCTION__,error)
-        showAlertWithMessage("Failed to load file with error \(error.localizedDescription)!")
+        print("%s. With Error %@", #function, error)
+        showAlert(message: "Failed to load file with error \(error.localizedDescription)!")
     }
 
     // WKUIDelegate
     func webView(webView: WKWebView, didFinishNavigation navigation: WKNavigation!) {
-        NSLog("%s", __FUNCTION__)
+        print("%s", #function)
     }
 
     func webView(webView: WKWebView, didFailNavigation navigation: WKNavigation!, withError error: NSError) {
-        NSLog("%s. With Error %@", __FUNCTION__,error)
-        showAlertWithMessage("Failed to load file with error \(error.localizedDescription)!")
+        print("%s. With Error %@", #function, error)
+        self.showAlert(message: "Failed to load file with error \(error.localizedDescription)!")
     }
-
-
-    // File Loading
-    func loadHtml() {
-        // NOTE: Due to a bug in webKit as of iOS 8.1.1 we CANNOT load a local resource when running on device. Once that is fixed, we can get rid of the temp copy
-        let mainBundle:NSBundle = NSBundle(forClass: ViewController.self)
-        var error:NSError?
-
-        var fileName:String =  String("\( NSProcessInfo.processInfo().globallyUniqueString)_index.html")
-
-        var tempHtmlPath:String? = NSTemporaryDirectory().stringByAppendingPathComponent(fileName)
-
-        if let htmlPath = mainBundle.pathForResource("index", ofType: "html") {
-            NSFileManager.defaultManager().copyItemAtPath(htmlPath, toPath: tempHtmlPath!, error: &error)
-            if tempHtmlPath != nil {
-                let requestUrl = NSURLRequest(URL: NSURL(fileURLWithPath: tempHtmlPath!)!)
-                webView?.loadRequest(requestUrl)
-            }
-        }
-        else {
-           showAlertWithMessage("Could not load HTML File!")
-        }
-
-    }
-
-    func showAlertWithMessage(message:String) {
-        let alertAction:UIAlertAction = UIAlertAction(title: "Cancel", style: UIAlertActionStyle.Cancel) { (UIAlertAction) -> Void in
-            self.dismissViewControllerAnimated(true, completion: { () -> Void in
-
-            })
-        }
-
-        let alertView:UIAlertController = UIAlertController(title: nil, message: message, preferredStyle: UIAlertControllerStyle.Alert)
-        alertView.addAction(alertAction)
-
-        self.presentViewController(alertView, animated: true, completion: { () -> Void in
-
-        })
-    }
-
 
 }
+
